@@ -10,6 +10,8 @@ from .errors import AppError, UnauthorizedError, ValidationError, integer_text
 from .services import create_message, require_conversation
 
 logger = logging.getLogger(__name__)
+SEND_TIMEOUT_SECONDS = 5
+CLOSE_TIMEOUT_SECONDS = 1
 
 
 class ConnectionManager:
@@ -31,11 +33,27 @@ class ConnectionManager:
 
         async def send(websocket):
             try:
-                await asyncio.wait_for(websocket.send(payload), timeout=5)
+                await asyncio.wait_for(
+                    websocket.send(payload), timeout=SEND_TIMEOUT_SECONDS
+                )
             except Exception:
                 self.disconnect(conversation_id, websocket)
+                # A disconnected transport triggers the client's reconnect/resync.
+                # Removing membership alone leaves an open but stale client.
+                try:
+                    await asyncio.wait_for(
+                        websocket.close(code=1013), timeout=CLOSE_TIMEOUT_SECONDS
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to close a removed socket for conversation %s",
+                        conversation_id,
+                        exc_info=True,
+                    )
 
-        await asyncio.gather(*(send(ws) for ws in tuple(self.connections.get(conversation_id, ()))))
+        await asyncio.gather(
+            *(send(ws) for ws in tuple(self.connections.get(conversation_id, ())))
+        )
 
 
 manager = ConnectionManager()
@@ -43,7 +61,12 @@ websocket_api = Blueprint("websocket_api")
 
 
 async def send_error(websocket, error):
-    await websocket.send(json.dumps({"type": "error", "code": error.code, "message": error.message}, ensure_ascii=False))
+    await websocket.send(
+        json.dumps(
+            {"type": "error", "code": error.code, "message": error.message},
+            ensure_ascii=False,
+        )
+    )
 
 
 @websocket_api.websocket("/ws/conversations/<conversation_id:int>")
@@ -60,7 +83,15 @@ async def conversation_socket(request, websocket, conversation_id):
         await websocket.close(code=1008)
         return
     except (OperationalError, DBConnectionError, OSError):
-        await websocket.send(json.dumps({"type": "error", "code": "database_unavailable", "message": "数据库暂时不可用，请稍后重试"}))
+        await websocket.send(
+            json.dumps(
+                {
+                    "type": "error",
+                    "code": "database_unavailable",
+                    "message": "数据库暂时不可用，请稍后重试",
+                }
+            )
+        )
         await websocket.close(code=1013)
         return
 
@@ -75,11 +106,23 @@ async def conversation_socket(request, websocket, conversation_id):
                     raise ValidationError("消息必须是有效的 JSON") from error
                 if not isinstance(event, dict) or event.get("type") != "message.send":
                     raise ValidationError("不支持的消息类型")
-                message = await create_message(user_id, conversation_id, event.get("body"))
-                await connections.broadcast(conversation_id, {"type": "message.created", "data": message})
+                message = await create_message(
+                    user_id, conversation_id, event.get("body")
+                )
+                await connections.broadcast(
+                    conversation_id, {"type": "message.created", "data": message}
+                )
             except AppError as error:
                 await send_error(websocket, error)
             except (OperationalError, DBConnectionError, OSError):
-                await websocket.send(json.dumps({"type": "error", "code": "database_unavailable", "message": "数据库暂时不可用，请稍后重试"}))
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "code": "database_unavailable",
+                            "message": "数据库暂时不可用，请稍后重试",
+                        }
+                    )
+                )
     finally:
         connections.disconnect(conversation_id, websocket)
