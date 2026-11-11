@@ -1,0 +1,45 @@
+from tortoise import fields, models
+
+
+class User(models.Model):
+    id = fields.IntField(primary_key=True)
+    username = fields.CharField(max_length=64)
+    username_lower = fields.CharField(max_length=64, unique=True)
+    display_name = fields.CharField(max_length=100)
+    avatar_url = fields.CharField(max_length=512, null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    async def save(self, *args, **kwargs):
+        self.username_lower = self.username.lower()
+        return await super().save(*args, **kwargs)
+
+
+class Conversation(models.Model):
+    id = fields.IntField(primary_key=True)
+    user_a = fields.ForeignKeyField("models.User", related_name="conversations_a", on_delete=fields.CASCADE)
+    user_b = fields.ForeignKeyField("models.User", related_name="conversations_b", on_delete=fields.CASCADE)
+    ttl_seconds = fields.IntField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        unique_together = (("user_a", "user_b"),)
+
+    async def save(self, *args, **kwargs):
+        if self.user_a_id == self.user_b_id:
+            raise ValueError("A conversation requires two different users")
+        if self.user_a_id > self.user_b_id:
+            self.user_a_id, self.user_b_id = self.user_b_id, self.user_a_id
+        return await super().save(*args, **kwargs)
+
+
+class Message(models.Model):
+    id = fields.IntField(primary_key=True)
+    conversation = fields.ForeignKeyField("models.Conversation", related_name="messages", on_delete=fields.CASCADE)
+    sender = fields.ForeignKeyField("models.User", related_name="messages", on_delete=fields.CASCADE)
+    body = fields.TextField()
+    created_at = fields.DatetimeField(auto_now_add=True)
+    expires_at = fields.DatetimeField(null=True, db_index=True)
+
+    class Meta:
+        indexes = (("conversation", "id"),)
