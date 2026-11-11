@@ -23,6 +23,7 @@ import {
 } from "./api";
 import type { Conversation, TtlSeconds, User } from "./types";
 import { ttlLabel } from "./display";
+import { ConversationActivityGuard } from "./conversationState";
 import { useConversation } from "./hooks/useConversation";
 import Avatar from "./components/Avatar";
 import ChatHeader from "./components/ChatHeader";
@@ -51,6 +52,7 @@ export default function App() {
   const [bootRetry, setBootRetry] = useState(0);
   const searchInput = useRef<HTMLInputElement>(null);
   const identity = useRef(currentUserId);
+  const activityGuard = useRef(new ConversationActivityGuard());
   identity.current = currentUserId;
   useEffect(() => {
     let cancelled = false;
@@ -91,11 +93,18 @@ export default function App() {
     setShowInfo(false);
     setCurrentUser(users.find((user) => user.id === userId) || null);
     localStorage.setItem("whisper-user", String(userId));
+    const initialRevision = activityGuard.current.beginRequest();
     Promise.all([getMe(userId), listConversations(userId)])
       .then(([me, items]) => {
         if (cancelled) return;
         setCurrentUser(me);
-        setConversations(sortConversations(items));
+        setConversations((previous) =>
+          activityGuard.current.applySnapshot(
+            previous,
+            sortConversations(items),
+            initialRevision,
+          ),
+        );
         if (window.matchMedia("(min-width: 761px)").matches)
           setSelectedId(items[0]?.id || null);
       })
@@ -105,14 +114,23 @@ export default function App() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    const refresh = () =>
-      listConversations(userId)
+    const refresh = () => {
+      const requestRevision = activityGuard.current.beginRequest();
+      return listConversations(userId)
         .then((items) => {
-          if (!cancelled) setConversations(sortConversations(items));
+          if (!cancelled)
+            setConversations((previous) =>
+              activityGuard.current.applySnapshot(
+                previous,
+                sortConversations(items),
+                requestRevision,
+              ),
+            );
         })
         .catch(() => {
           /* The conversation and connection states preserve current content during background failures. */
         });
+    };
     const timer = setInterval(refresh, 15000);
     window.addEventListener("focus", refresh);
     return () => {
@@ -171,14 +189,16 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
   const onActivity = useCallback(
-    (update: Partial<Conversation> & { id: number }) =>
+    (update: Partial<Conversation> & { id: number }) => {
+      activityGuard.current.recordActivity();
       setConversations((previous) =>
         sortConversations(
           previous.map((item) =>
             item.id === update.id ? { ...item, ...update } : item,
           ),
         ),
-      ),
+      );
+    },
     [],
   );
   const live = useConversation(currentUserId, selectedId, onActivity);
@@ -191,19 +211,30 @@ export default function App() {
     setCreating(user.id);
     setError("");
     try {
+      const requestRevision = activityGuard.current.beginRequest();
       const conversation = await createConversation(userId, user.id);
       if (identity.current !== userId) return;
       setConversations((previous) =>
-        sortConversations([
-          ...previous.filter((item) => item.id !== conversation.id),
-          conversation,
-        ]),
+        sortConversations(
+          activityGuard.current.applyConversationResponse(
+            previous,
+            conversation,
+            requestRevision,
+          ),
+        ),
       );
       setSelectedId(conversation.id);
       setQuery("");
+      const refreshRevision = activityGuard.current.beginRequest();
       const items = await listConversations(userId);
       if (identity.current === userId)
-        setConversations(sortConversations(items));
+        setConversations((previous) =>
+          activityGuard.current.applySnapshot(
+            previous,
+            sortConversations(items),
+            refreshRevision,
+          ),
+        );
     } catch (cause) {
       if (identity.current === userId)
         setError(cause instanceof Error ? cause.message : "无法创建会话");
@@ -215,8 +246,13 @@ export default function App() {
     if (!currentUserId || !selected) return;
     const userId = currentUserId;
     try {
+      const requestRevision = activityGuard.current.beginRequest();
       const updated = await updateConversationTtl(userId, selected.id, ttl);
-      if (identity.current === userId) onActivity(updated);
+      if (
+        identity.current === userId &&
+        activityGuard.current.beginRequest() === requestRevision
+      )
+        onActivity(updated);
     } catch (cause) {
       if (identity.current === userId)
         setError(cause instanceof Error ? cause.message : "设置失败");
