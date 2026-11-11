@@ -22,6 +22,7 @@ class Settings:
     smtp_password: str = ""
     smtp_starttls: bool = False
     allow_legacy_identity: bool = False
+    auth_test_mode: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -46,4 +47,5 @@ class Settings:
             smtp_password=os.getenv("SMTP_PASSWORD", ""),
             smtp_starttls=os.getenv("SMTP_STARTTLS", "false").strip().lower() in {"1", "true", "yes", "on"},
             allow_legacy_identity=os.getenv("ALLOW_LEGACY_IDENTITY", "false").strip().lower() in {"1", "true", "yes", "on"},
+            auth_test_mode=os.getenv("AUTH_TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"},
         )

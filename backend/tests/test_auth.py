@@ -31,12 +31,12 @@ def make_service(env, **kwargs):
     )
 
 
-async def register_user(service, env, username="New_User", email="new@example.com"):
+async def register_user(service, env, username="NewUser", email="new@example.com", display_name="新朋友"):
     await service.request_email_code(email, "register", ip="127.0.0.1")
     code = env.mailbox[-1]["code"]
     return await service.register(
         username=username, password="correct-password", email=email, code=code,
-        display_name="新朋友", ip="127.0.0.1",
+        display_name=display_name, ip="127.0.0.1",
     )
 
 
@@ -44,7 +44,7 @@ async def test_registration_requires_email_verification(auth_env):
     service = make_service(auth_env)
     with pytest.raises(UnauthorizedError):
         await service.register(
-            username="new_user", password="correct-password", email="new@example.com", code="123456",
+            username="newuser", password="correct-password", display_name="新朋友", email="new@example.com", code="123456",
         )
     assert await User.all().count() == 0
 
@@ -53,29 +53,29 @@ async def test_registration_normalizes_email_and_reserves_case_insensitive_names
     service = make_service(auth_env)
     user = await register_user(service, auth_env, email="New@Example.COM")
     assert user.email == "new@example.com" and user.email_verified_at is not None
-    assert user.username == "New_User" and user.username_lower == "new_user"
+    assert user.username == "NewUser" and user.username_lower == "newuser"
     assert user.password_hash and "correct-password" not in user.password_hash
     await service.request_email_code("other@example.com", "register", ip="127.0.0.2")
     with pytest.raises(ValidationError):
         await service.register(
-            username="NEW_USER", password="another-password", email="other@example.com",
-            code=auth_env.mailbox[-1]["code"],
+            username="NEWUSER", password="another-password", display_name="另一个人",
+            email="other@example.com", code=auth_env.mailbox[-1]["code"],
         )
     with pytest.raises(UnauthorizedError):
         await service.register(
-            username="other_user", password="another-password", email="NEW@example.com", code="000000",
+            username="other-user", password="another-password", display_name="另一个人", email="NEW@example.com", code="000000",
         )
     assert await User.all().count() == 1
 
 
 @pytest.mark.parametrize("fields", [
-    {"username": "ab"}, {"username": "user-name"}, {"username": "中文用户"}, {"username": "a" * 33},
+    {"username": ""}, {"username": "user_name"}, {"username": "中文用户"}, {"username": "a" * 13},
     {"password": "short"}, {"password": "a" * 129}, {"password": 12345678},
-    {"display_name": "a" * 81}, {"email": "invalid"}, {"email": ""}, {"code": "１２３４５６"},
+    {"display_name": ""}, {"display_name": "a" * 13}, {"display_name": "名字_"}, {"email": "invalid"}, {"email": ""}, {"code": "１２３４５６"},
 ])
 async def test_registration_validates_identity_fields_before_creating_user(auth_env, fields):
     service = make_service(auth_env)
-    data = dict(username="new_user", password="correct-password", email="new@example.com", code="123456")
+    data = dict(username="newuser", password="correct-password", display_name="新朋友", email="new@example.com", code="123456")
     data.update(fields)
     with pytest.raises(ValidationError):
         await service.register(**data)
@@ -88,11 +88,11 @@ async def test_code_is_single_use_and_wrong_attempts_expire_it(auth_env):
     for _ in range(5):
         with pytest.raises(UnauthorizedError):
             await service.register(
-                username="new_user", password="correct-password", email="new@example.com", code="000000",
+                username="newuser", password="correct-password", display_name="新朋友", email="new@example.com", code="000000",
             )
     with pytest.raises(UnauthorizedError):
         await service.register(
-            username="new_user", password="correct-password", email="new@example.com",
+            username="newuser", password="correct-password", display_name="新朋友", email="new@example.com",
             code=auth_env.mailbox[-1]["code"],
         )
 
@@ -106,17 +106,17 @@ async def test_expired_code_and_replayed_code_are_rejected(auth_env):
     await asyncio.sleep(1.05)
     with pytest.raises(UnauthorizedError):
         await service.register(
-            username="new_user", password="correct-password", email="new@example.com",
+            username="newuser", password="correct-password", display_name="新朋友", email="new@example.com",
             code=auth_env.mailbox[-1]["code"],
         )
     await service.request_email_code("new@example.com", "register", ip="1.1.1.1")
     await service.register(
-        username="new_user", password="correct-password", email="new@example.com",
+        username="newuser", password="correct-password", display_name="新朋友", email="new@example.com",
         code=auth_env.mailbox[-1]["code"],
     )
     with pytest.raises(UnauthorizedError):
         await service.register(
-            username="second_user", password="correct-password", email="new@example.com",
+            username="second-user", password="correct-password", display_name="另一个昵称", email="new@example.com",
             code=auth_env.mailbox[-1]["code"],
         )
 
@@ -124,10 +124,10 @@ async def test_expired_code_and_replayed_code_are_rejected(auth_env):
 async def test_password_login_and_cookie_session_round_trip(auth_env):
     service = make_service(auth_env)
     user = await register_user(service, auth_env)
-    assert await service.login_password("NEW_USER", "correct-password", ip="127.0.0.1") == user
+    assert await service.login_password("NEWUSER", "correct-password", ip="127.0.0.1") == user
     assert await service.login_password("NEW@example.COM", "correct-password", ip="127.0.0.1") == user
     with pytest.raises(UnauthorizedError):
-        await service.login_password("new_user", "wrong-password", ip="127.0.0.1")
+        await service.login_password("newuser", "wrong-password", ip="127.0.0.1")
     token = await service.create_session(user)
     request = SimpleNamespace(cookies={service.cookie_name: token})
     assert await service.authenticate_request(request) == user
@@ -155,3 +155,14 @@ async def test_email_sender_failure_does_not_leave_otp(auth_env):
     with pytest.raises(OSError):
         await service.request_email_code("new@example.com", "register", ip="1.1.1.1")
     assert await auth_env.client.keys("auth-tests:auth:otp:*") == []
+
+
+async def test_test_mode_accepts_fixed_code_without_sending_email(auth_env):
+    service = make_service(auth_env, test_mode=True)
+    await service.request_email_code("test@example.com", "register", ip="1.1.1.1")
+    assert auth_env.mailbox == []
+    user = await service.register(
+        username="testuser", password="correct-password", display_name="测试用户",
+        email="test@example.com", code="666666",
+    )
+    assert user.email == "test@example.com"

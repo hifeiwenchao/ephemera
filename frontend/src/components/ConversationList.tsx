@@ -33,7 +33,7 @@ export default function ConversationList({
     return (
       <div className="sidebar-empty">
         <MessageCircle size={31} strokeWidth={1.2} />
-        <strong>好对话，从一声问候开始</strong>搜索用户名，找到你想聊的人
+        <strong>好对话，从一声问候开始</strong>搜索账号名或昵称，找到你想聊的人
       </div>
     );
   return (

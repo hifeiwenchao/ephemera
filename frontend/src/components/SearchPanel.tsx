@@ -19,13 +19,13 @@ export default function SearchPanel({
   creating: number | null;
   onSelect: (user: User) => void;
 }) {
-  if (query.trim().length < 2)
+  if (query.trim().length < 1)
     return (
       <div className="sidebar-empty">
         <UserRoundSearch size={30} strokeWidth={1.25} />
-        <strong>认识一位新朋友</strong>输入至少 2 个字符
+        <strong>认识一位新朋友</strong>输入账号名或昵称搜索
         <br />
-        按用户名搜索，开启一段对话
+        按账号名或昵称搜索，开启一段对话
       </div>
     );
   if (loading)
@@ -39,7 +39,7 @@ export default function SearchPanel({
     return (
       <div className="sidebar-empty">
         <Search size={29} strokeWidth={1.25} />
-        <strong>还没有找到「{query}」</strong>试试其他用户名，如 alice 或 bob
+        <strong>还没有找到「{query}」</strong>试试其他账号名或昵称，如 alice 或 林间
       </div>
     );
   return (

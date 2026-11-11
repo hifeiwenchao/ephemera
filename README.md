@@ -4,13 +4,13 @@
 
 ## 已实现
 
-- 根据用户名搜索用户，支持大小写不敏感与可选 `@` 前缀。
+- 根据账号名或昵称搜索用户，账号名大小写不敏感，支持可选 `@` 前缀；账号名和昵称均唯一且最多 12 位。账号名可用英文字母、数字和 `!@#$%^&*()-+=~`，昵称可用中英文、数字和 `!@#$%^&*()-+=`。
 - 两名用户之间只有一个单聊；重复发起对话进入已有会话。
 - WebSocket 双向发送纯文本消息，历史消息分页加载，断线重连后重新同步。
 - 会话可设置关闭、1 小时、1 天、7 天、30 天自动删除。
 - 到期消息使用 Redis 原生 TTL 过期，前端按到期时间移除；后台定期清理并通知双方。
 - 注册必须绑定已验证邮箱；支持用户名密码登录和邮箱验证码登录，登录状态使用 HttpOnly Cookie。
-- Compose 会启动本地 Mailpit，验证码邮件可在 http://127.0.0.1:8025 查看，不会发送到外部邮箱。
+- 当前测试模式不发送真实邮件，验证码固定使用 `666666`；切换真实 SMTP 时关闭 `AUTH_TEST_MODE` 并填写 SMTP 配置。
 - 按会话保留未发送草稿，服务端确认后再清空输入。
 - 响应式布局，支持桌面和手机宽度。
 
@@ -35,10 +35,10 @@ cp .env.example .env
 Docker 中的 MySQL 地址为 `mysql://root:你的密码@host.docker.internal:3306/single_chat`，Redis 地址为 `redis://default:你的密码@host.docker.internal:6379/0`。两个连接地址的密码若包含 `@`、`:`、`/`、`#`、`%` 等特殊字符，需使用 URL 编码，例如 `@` 写作 `%40`。配置后用一条命令启动：
 
 ```bash
-docker compose up --build -d api web mailpit
+docker compose up --build -d api web
 ```
 
-打开 **http://127.0.0.1:5174**。首次构建需要拉取 Python、Node、Nginx 和 Mailpit 镜像并安装依赖。后端会在 `single_chat` 中创建缺失的用户与会话表，并初始化演示数据；聊天记录写入 Redis。Docker 不会创建外部 MySQL 数据库或启动 Redis 容器。
+打开 **http://127.0.0.1:5174**。首次构建需要拉取 Python、Node 和 Nginx 镜像并安装依赖。后端会在 `single_chat` 中创建缺失的用户与会话表，并初始化演示数据；聊天记录写入 Redis。Docker 不会创建外部 MySQL 数据库或启动 Redis 容器。
 
 当前工作目录的私有 `.env` 与 `backend/.env` 已配置。它们不会提交到版本库或包含在交付压缩包中；解压到新目录后，需要重新复制示例并填写密码。
 
@@ -63,7 +63,7 @@ docker compose --profile bundled-db up -d --wait mysql
 docker compose up --build -d api web
 ```
 
-内置 MySQL 默认映射到本机回环地址的 `3307` 端口，数据保存在原有 Compose 命名卷中。避免使用 `docker compose down -v`，该命令会移除内置原型数据库。直接运行 Python 后端时，连接内置数据库的地址应为 `mysql://chat:chat_password@127.0.0.1:3307/single_chat`。Mailpit 仍使用本机 `1025` SMTP 和 `8025` 网页端口。
+内置 MySQL 默认映射到本机回环地址的 `3307` 端口，数据保存在原有 Compose 命名卷中。避免使用 `docker compose down -v`，该命令会移除内置原型数据库。直接运行 Python 后端时，连接内置数据库的地址应为 `mysql://chat:chat_password@127.0.0.1:3307/single_chat`。
 
 ## 开发启动
 
@@ -109,9 +109,9 @@ npm run dev -- --host 127.0.0.1 --port 5173
 首次启动预置 `alice / 艾莉丝`、`bob / 林间`、`carol / 陈沐`、`david / 顾远`、`nina / 宁可`，并为 Alice 提供几段示例聊天。预置身份用于保留原型数据；新用户请走注册流程并绑定邮箱。
 
 1. 打开网页，点击“创建账号”。
-2. 填写用户名、密码和邮箱，点击“获取验证码”。
-3. 在本地 Mailpit 中打开验证码邮件，完成注册；也可使用邮箱验证码登录。
-4. 打开第二个浏览器窗口注册另一个账号，在搜索框按用户名找到对方并开始聊天。
+2. 填写账号名、昵称、密码和邮箱，点击“获取验证码”。
+3. 测试环境直接输入验证码 `666666` 完成注册；也可使用同一验证码进行邮箱登录。
+4. 打开第二个浏览器窗口注册另一个账号，在搜索框按账号名或昵称找到对方并开始聊天。
 5. 任一窗口发送消息，另一个窗口会通过 WebSocket 实时收到。
 6. 点击聊天顶部的自动删除设置，选择 `1 小时`；之后发送的消息带有到期时间，已有消息保持原样。
 
@@ -131,12 +131,12 @@ TTL 从服务端接受消息的时刻开始计时。TTL 设置只影响之后发
 |---|---|---|
 | GET | `/api/health` | 服务、MySQL 与 Redis 健康检查 |
 | POST | `/api/auth/email-code` | 请求邮箱验证码，`purpose` 为 `register` 或 `login` |
-| POST | `/api/auth/register` | 用户名、密码、邮箱和验证码注册，并建立 Cookie 会话 |
-| POST | `/api/auth/login/password` | 用户名密码登录 |
+| POST | `/api/auth/register` | 账号名、昵称、密码、邮箱和验证码注册，并建立 Cookie 会话 |
+| POST | `/api/auth/login/password` | 账号名或邮箱 + 密码登录 |
 | POST | `/api/auth/login/email` | 邮箱验证码登录 |
 | POST | `/api/auth/logout` | 撤销当前会话并清除 Cookie |
 | GET | `/api/me` | 当前用户 |
-| GET | `/api/users/search?q=bob` | 搜索用户名，至少 2 字符 |
+| GET | `/api/users/search?q=bob` | 搜索账号名或昵称（至少 1 个字符） |
 | GET | `/api/conversations` | 会话列表 |
 | POST | `/api/conversations` | 请求体 `{"user_id": 2}`，幂等创建会话 |
 | GET | `/api/conversations/1/messages?limit=50&before=100` | 未过期消息历史，正序返回 |
@@ -167,7 +167,8 @@ WebSocket：`ws://127.0.0.1:8001/ws/conversations/1`，浏览器通过同源 Coo
 | `REDIS_URL` | 在私有配置中填写 | Redis 消息存储连接；原生开发用 `127.0.0.1:6379`，Docker 用 `host.docker.internal:6379` |
 | `AUTH_SECRET` | 私有随机值（至少 32 字符） | Cookie 会话签名摘要的服务端密钥 |
 | `SESSION_COOKIE_SECURE` | `false` | HTTPS 部署时改为 `true` |
-| `SMTP_HOST` / `SMTP_PORT` | `127.0.0.1` / `1025`（Docker 为 `mailpit`） | 验证码邮件 SMTP 服务 |
+| `AUTH_TEST_MODE` | `true`（当前本地配置） | 测试模式固定接受验证码 `666666`，不发送邮件；真实环境改为 `false` |
+| `SMTP_HOST` / `SMTP_PORT` | `127.0.0.1` / `1025` | `AUTH_TEST_MODE=false` 时的验证码 SMTP 服务 |
 | `SMTP_FROM` | `no-reply@local.test` | 验证码发件地址 |
 | `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_STARTTLS` | 空 / 空 / `false` | 切换真实 SMTP 时填写 |
 | `ALLOW_LEGACY_IDENTITY` | `false` | 仅测试旧 `X-User-Id`/`user_id` 身份；生产保持关闭 |
@@ -190,6 +191,6 @@ npm test
 npm run build
 ```
 
-后端使用隔离 SQLite 与 fakeredis 测试数据库，覆盖注册唯一性、邮箱验证码过期/重放/限流、密码与邮箱登录、Cookie 会话、搜索、会话唯一性、权限、Redis TTL、过期索引、HTTP 输入和两个真实 WebSocket 客户端。另已在实际 MySQL/Redis 环境验证数据迁移、UTF-8 消息、双向广播、原生 TTL 和本地 Mailpit 邮件收发。
+后端使用隔离 SQLite 与 fakeredis 测试数据库，覆盖账号名/昵称/邮箱唯一性、昵称规则、邮箱验证码过期/重放/限流、密码与邮箱登录、Cookie 会话、账号名和昵称搜索、会话唯一性、权限、Redis TTL、过期索引、HTTP 输入和两个真实 WebSocket 客户端。另已在实际 MySQL/Redis 环境验证数据迁移、UTF-8 消息、双向广播、原生 TTL 和测试验证码流程。
 
 当前只实现文本单聊；群聊、附件、已读回执与推送未进入此原型范围。发送失败或未收到服务端确认时保留草稿；网络确认丢失后的手动重发可能产生重复消息，生产版本可加入客户端消息 ID 去重。

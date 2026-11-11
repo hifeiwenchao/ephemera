@@ -74,6 +74,7 @@ def create_app(settings=None) -> Sanic:
             ),
             prefix=store.prefix,
             cookie_secure=settings.session_cookie_secure,
+            test_mode=settings.auth_test_mode,
         )
         await seed_demo_data()
         app.ctx.cleanup_task = asyncio.create_task(cleanup_loop(app))

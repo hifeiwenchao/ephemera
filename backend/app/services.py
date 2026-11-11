@@ -33,9 +33,11 @@ async def search_users(current_user_id: int, query: str):
     if not isinstance(query, str):
         raise ValidationError("搜索内容必须是文本")
     query = query.strip().lstrip("@").lower()
-    if len(query) < 2:
+    if len(query) < 1 or len(query) > 12:
         return []
-    users = await User.filter(username_lower__contains=query).exclude(id=current_user_id).order_by("username_lower").limit(20)
+    users = await User.filter(
+        Q(username_lower__contains=query) | Q(display_name__icontains=query)
+    ).exclude(id=current_user_id).order_by("username_lower").limit(20)
     return [user_to_dict(user) for user in users]
 
 

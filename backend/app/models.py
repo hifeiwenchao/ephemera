@@ -3,9 +3,9 @@ from tortoise import fields, models
 
 class User(models.Model):
     id = fields.IntField(primary_key=True)
-    username = fields.CharField(max_length=64)
-    username_lower = fields.CharField(max_length=64, unique=True)
-    display_name = fields.CharField(max_length=100)
+    username = fields.CharField(max_length=12)
+    username_lower = fields.CharField(max_length=12, unique=True)
+    display_name = fields.CharField(max_length=12, unique=True)
     avatar_url = fields.CharField(max_length=512, null=True)
     password_hash = fields.CharField(max_length=255, null=True)
     email = fields.CharField(max_length=254, unique=True, null=True)

@@ -30,7 +30,8 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:?请先配置项目根目录的.env文件中的AUTH_SECRET}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       ALLOW_LEGACY_IDENTITY: ${ALLOW_LEGACY_IDENTITY:-false}
-      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      AUTH_TEST_MODE: ${AUTH_TEST_MODE:-false}
+      SMTP_HOST: ${SMTP_HOST:-127.0.0.1}
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_FROM: ${SMTP_FROM:-no-reply@local.test}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
@@ -46,12 +47,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  mailpit:
-    image: axllent/mailpit:v1.21
-    ports:
-      - "127.0.0.1:${SMTP_PORT_HOST:-1025}:1025"
-      - "127.0.0.1:${MAILPIT_WEB_PORT:-8025}:8025"
 
   web:
     build:

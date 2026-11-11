@@ -96,7 +96,7 @@ export const loginWithEmail = (email: string, code: string) =>
   });
 export const register = (fields: {
   username: string;
-  display_name?: string;
+  display_name: string;
   password: string;
   email: string;
   code: string;

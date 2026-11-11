@@ -148,7 +148,7 @@ export default function App() {
     };
   }, [currentUserId]);
   useEffect(() => {
-    if (!currentUserId || query.trim().length < 2) {
+    if (!currentUserId || query.trim().length < 1) {
       setResults([]);
       setSearching(false);
       return;
@@ -356,8 +356,8 @@ export default function App() {
             ref={searchInput}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索用户名，开启新的对话"
-            aria-label="搜索用户名"
+            placeholder="搜索账号名或昵称，开启新的对话"
+            aria-label="搜索账号名或昵称"
           />
           {query ? (
             <button

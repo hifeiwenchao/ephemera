@@ -14,18 +14,19 @@ from typing import Awaitable, Callable
 
 from redis.exceptions import WatchError
 from tortoise.exceptions import IntegrityError
-from tortoise.expressions import Q
 
 from .errors import UnauthorizedError, ValidationError
 from .models import User
 
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,32}$")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9!@#$%^&*()+=~-]{1,12}$")
+DISPLAY_NAME_RE = re.compile(r"^[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0003134fA-Za-z0-9!@#$%^&*()+=-]{1,12}$")
 CODE_RE = re.compile(r"^[0-9]{6}$")
 SESSION_TTL = 7 * 24 * 60 * 60
 OTP_TTL = 5 * 60
 RESEND_TTL = 60
 MAX_OTP_ATTEMPTS = 5
+TEST_CODE = "666666"
 
 
 async def _derive_password(password: str, salt: bytes | None = None) -> str:
@@ -66,13 +67,21 @@ def normalize_email(email: str) -> str:
     return value
 
 
+def normalize_display_name(display_name: str) -> str:
+    if not isinstance(display_name, str):
+        raise ValidationError("昵称必填，最多 12 个字符")
+    value = display_name.strip()
+    if not DISPLAY_NAME_RE.fullmatch(value):
+        raise ValidationError("昵称必填，限中文、英文、数字及 !@#$%^&*()-+=，最多 12 个字符")
+    return value
+
+
 def validate_registration(username, password, display_name, email, code):
     if not isinstance(username, str) or not USERNAME_RE.fullmatch(username):
-        raise ValidationError("用户名必须是 3–32 位 ASCII 字母、数字或下划线")
+        raise ValidationError("账号名最多 12 位，只能使用英文字母、数字和 !@#$%^&*()-+=~")
     if not isinstance(password, str) or not 8 <= len(password) <= 128:
         raise ValidationError("密码长度必须为 8–128 个字符")
-    if display_name is not None and (not isinstance(display_name, str) or len(display_name) > 80):
-        raise ValidationError("显示名称最多 80 个字符")
+    normalize_display_name(display_name)
     if not isinstance(code, str) or not CODE_RE.fullmatch(code):
         raise ValidationError("验证码必须是 6 位数字")
     return normalize_email(email)
@@ -101,7 +110,7 @@ class SMTPEmailSender:
 
 
 class AuthService:
-    def __init__(self, client, *, secret: str, email_sender: Callable[[str, str, str], Awaitable[None]], prefix: str = "whisper:", cookie_name: str = "whisper_session", cookie_secure: bool = False):
+    def __init__(self, client, *, secret: str, email_sender: Callable[[str, str, str], Awaitable[None]], prefix: str = "whisper:", cookie_name: str = "whisper_session", cookie_secure: bool = False, test_mode: bool = False):
         if not secret or len(secret) < 32:
             raise ValueError("auth secret must be at least 32 characters")
         self.client = client
@@ -110,6 +119,7 @@ class AuthService:
         self.prefix = prefix if prefix.endswith(":") else prefix + ":"
         self.cookie_name = cookie_name
         self.cookie_secure = cookie_secure
+        self.test_mode = test_mode
 
     def _key(self, suffix: str) -> str:
         return f"{self.prefix}auth:{suffix}"
@@ -142,16 +152,19 @@ class AuthService:
         code = f"{secrets.randbelow(1_000_000):06d}"
         code_key = self._key(f"otp:{purpose}:{email}")
         await self.client.set(code_key, self._digest(code), ex=OTP_TTL)
-        try:
-            await self.email_sender(email, purpose, code)
-        except Exception:
-            await self.client.delete(code_key, cooldown)
-            raise
+        if not self.test_mode:
+            try:
+                await self.email_sender(email, purpose, code)
+            except Exception:
+                await self.client.delete(code_key, cooldown)
+                raise
         if purpose == "login":
             return {"message": "如果邮箱已注册，验证码将发送到邮箱", "retry_after": RESEND_TTL}
         return {"message": "验证码已发送", "retry_after": RESEND_TTL}
 
     async def _consume_code(self, email: str, purpose: str, code: str):
+        if self.test_mode and code == TEST_CODE:
+            return
         key = self._key(f"otp:{purpose}:{email}")
         attempts_key = self._key(f"otp-attempts:{purpose}:{email}")
         expected_digest = self._digest(code)
@@ -184,16 +197,19 @@ class AuthService:
 
     async def register(self, *, username, password, email, code, display_name=None, ip: str = "") -> User:
         email = validate_registration(username, password, display_name, email, code)
+        display_name = normalize_display_name(display_name)
         await self._consume_code(email, "register", code)
         if await User.get_or_none(username_lower=username.lower()):
-            raise ValidationError("用户名已存在")
+            raise ValidationError("账号名已存在")
+        if await User.get_or_none(display_name=display_name):
+            raise ValidationError("昵称已存在")
         if await User.get_or_none(email=email):
             raise ValidationError("邮箱已注册")
         password_hash = await _derive_password(password)
         try:
-            return await User.create(username=username, display_name=display_name or username, email=email, email_verified_at=datetime.now(timezone.utc), password_hash=password_hash)
+            return await User.create(username=username, display_name=display_name, email=email, email_verified_at=datetime.now(timezone.utc), password_hash=password_hash)
         except IntegrityError as exc:
-            raise ValidationError("用户名或邮箱已存在") from exc
+            raise ValidationError("账号名、昵称或邮箱已存在") from exc
 
     async def login_password(self, username: str, password: str, *, ip: str = "") -> User:
         if not isinstance(username, str) or not isinstance(password, str):
@@ -201,7 +217,14 @@ class AuthService:
         identifier = username.strip().lower()
         if ip and not await self._limited(self._key(f"login:{ip}:{identifier}"), 10, 300):
             raise UnauthorizedError("登录尝试过于频繁，请稍后重试")
-        user = await User.filter(Q(username_lower=identifier) | Q(email=identifier)).first()
+        if len(identifier) > 254:
+            raise UnauthorizedError("用户名或密码错误")
+        # Tortoise validates a filter value against the target column. Querying
+        # the two columns in one OR expression would validate a long email
+        # address against username_lower's 12-character limit.
+        user = await User.get_or_none(username_lower=identifier) if len(identifier) <= 12 else None
+        if user is None:
+            user = await User.get_or_none(email=identifier)
         if not user or not user.email_verified_at or not await _check_password(password, user.password_hash):
             raise UnauthorizedError("用户名或密码错误")
         return user

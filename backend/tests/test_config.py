@@ -9,6 +9,11 @@ def test_settings_reads_database_url_and_cleanup_interval(monkeypatch):
     assert settings.cleanup_interval_seconds == 15
 
 
+def test_settings_reads_auth_test_mode(monkeypatch):
+    monkeypatch.setenv("AUTH_TEST_MODE", "true")
+    assert Settings.from_env().auth_test_mode is True
+
+
 def test_settings_reads_redis_connection_and_namespace(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/4")
     monkeypatch.setenv("REDIS_PREFIX", "whisper:isolated:")

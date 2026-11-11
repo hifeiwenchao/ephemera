@@ -20,9 +20,9 @@ export function validateAuth(mode: AuthMode, fields: AuthFields): AuthErrors {
     if (!fields.username.trim()) errors.username = "请输入用户名";
     else if (
       mode === "register" &&
-      !/^[A-Za-z0-9_]{3,32}$/.test(fields.username.trim())
+      !/^[A-Za-z0-9!@#$%^&*()+=~-]{1,12}$/.test(fields.username.trim())
     )
-      errors.username = "使用 3–32 位英文字母、数字或下划线";
+      errors.username = "最多 12 位，只能使用英文字母、数字和 !@#$%^&*()-+=~";
     if (!fields.password) errors.password = "请输入密码";
     else if (
       mode === "register" &&
@@ -31,8 +31,15 @@ export function validateAuth(mode: AuthMode, fields: AuthFields): AuthErrors {
     )
       errors.password = "密码长度需要为 8–128 个字符";
   }
-  if (mode === "register" && Array.from(fields.display_name.trim()).length > 80)
-    errors.display_name = "昵称最多为 80 个字符";
+  if (mode === "register") {
+    const displayName = fields.display_name.trim();
+    if (!displayName) errors.display_name = "请输入昵称";
+    else if (
+      !/^[\p{Script=Han}A-Za-z0-9!@#$%^&*()\-+=]{1,12}$/u.test(displayName)
+    )
+      errors.display_name =
+        "昵称最多 12 位，只能使用中英文、数字和 !@#$%^&*()-+=";
+  }
   if (mode !== "password") {
     const emailError = validateEmail(fields.email);
     if (emailError) errors.email = emailError;

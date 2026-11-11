@@ -165,17 +165,17 @@ export default function AuthScreen({
               value={fields.username}
               onChange={(value) => change("username", value)}
               error={errors.username}
-              placeholder="3–32 位字母、数字或下划线"
+              placeholder="最多 12 位字母、数字或特殊符号"
               autoComplete="username"
             />
           )}{" "}
           {registerMode && (
             <Field
-              label="显示名称（可选）"
+              label="昵称"
               value={fields.display_name}
               onChange={(value) => change("display_name", value)}
               error={errors.display_name}
-              placeholder="别人看到的名字"
+              placeholder="中英文、数字或常用符号，最多 12 位"
               autoComplete="name"
             />
           )}
@@ -268,10 +268,7 @@ export default function AuthScreen({
         )}
         <div className="auth-trust">
           <ShieldCheck size={14} />
-          邮箱验证码会发送到你的邮箱{" "}
-          <a href="http://127.0.0.1:8025" target="_blank" rel="noreferrer">
-            打开测试邮箱
-          </a>
+          测试环境无需收信，验证码请输入 666666
         </div>
       </section>
     </main>
