@@ -4,6 +4,7 @@ export interface User {
   username: string;
   display_name: string;
   avatar_url: string | null;
+  email?: string | null;
 }
 export interface Message {
   id: number;

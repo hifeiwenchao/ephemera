@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
-from .models import Conversation, Message, User
+from .message_store import get_message_store
+from .models import Conversation, User
 
 
 async def seed_demo_data():
@@ -22,6 +23,6 @@ async def seed_demo_data():
         conversation = await Conversation.create(user_a_id=users["alice"].id, user_b_id=users[other].id)
         latest = now - timedelta(minutes=5 + index * 25)
         for offset, (sender, body) in enumerate(messages):
-            await Message.create(conversation=conversation, sender=users[sender], body=body, created_at=latest - timedelta(minutes=len(messages) - offset - 1))
+            await get_message_store().create_message(conversation.id, users[sender].id, body, created_at=latest - timedelta(minutes=len(messages) - offset - 1))
         conversation.updated_at = latest
         await conversation.save(update_fields=["updated_at"])

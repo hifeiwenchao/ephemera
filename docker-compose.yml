@@ -1,8 +1,9 @@
-name: whisper-prototype
+name: ephemera
 
 services:
   mysql:
     image: mysql:8.0
+    profiles: ["bundled-db"]
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-single_chat}
@@ -24,20 +25,33 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
-      DATABASE_URL: mysql://${MYSQL_USER:-chat}:${MYSQL_PASSWORD:-chat_password}@mysql:3306/${MYSQL_DATABASE:-single_chat}
+      DATABASE_URL: ${DATABASE_URL:?请先配置项目根目录的.env文件}
+      REDIS_URL: ${REDIS_URL:?请先配置项目根目录的.env文件中的REDIS_URL}
+      AUTH_SECRET: ${AUTH_SECRET:?请先配置项目根目录的.env文件中的AUTH_SECRET}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      ALLOW_LEGACY_IDENTITY: ${ALLOW_LEGACY_IDENTITY:-false}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@local.test}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
       HOST: 0.0.0.0
       PORT: 8001
       CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-60}
     ports:
       - "127.0.0.1:${API_PORT:-8001}:8001"
-    depends_on:
-      mysql:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/health', timeout=3)"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports:
+      - "127.0.0.1:${SMTP_PORT_HOST:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_WEB_PORT:-8025}:8025"
 
   web:
     build:

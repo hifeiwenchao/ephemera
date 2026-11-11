@@ -6,7 +6,7 @@ from backend.app.config import Settings
 
 @pytest.fixture
 def api(tmp_path):
-    app = create_app(Settings(f"sqlite://{tmp_path / 'api.sqlite3'}", False, 60, ["http://localhost:5173"]))
+    app = create_app(Settings(f"sqlite://{tmp_path / 'api.sqlite3'}", False, 60, ["http://localhost:5173"], allow_legacy_identity=True))
     return app.asgi_client
 
 
@@ -91,3 +91,19 @@ async def test_operational_db_error_returns_503(api, monkeypatch):
     monkeypatch.setattr(http_api, "search_users", unavailable)
     _, response = await api.get("/api/users/search?q=bob", headers={"X-User-Id": "1"})
     assert response.status == 503 and response.json["error"]["code"] == "database_unavailable"
+
+
+async def test_health_checks_redis_and_returns_graceful_503(api, monkeypatch):
+    from backend.app import http_api
+    from redis.exceptions import ConnectionError
+
+    class UnavailableClient:
+        async def ping(self):
+            raise ConnectionError("Connection unavailable")
+
+    class UnavailableStore:
+        client = UnavailableClient()
+
+    monkeypatch.setattr(http_api, "get_message_store", lambda: UnavailableStore(), raising=False)
+    _, response = await api.get("/api/health")
+    assert response.status == 503 and response.json["error"]["code"] == "redis_unavailable"

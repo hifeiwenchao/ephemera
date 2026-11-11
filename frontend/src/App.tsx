@@ -4,6 +4,8 @@ import {
   Check,
   Feather,
   Leaf,
+  LogOut,
+  LoaderCircle,
   MessageCircle,
   Plus,
   RefreshCw,
@@ -14,10 +16,11 @@ import {
   X,
 } from "lucide-react";
 import {
+  AUTH_EXPIRED_EVENT,
   createConversation,
-  getDemoUsers,
   getMe,
   listConversations,
+  logout,
   searchUsers,
   updateConversationTtl,
 } from "./api";
@@ -31,13 +34,12 @@ import ConversationList from "./components/ConversationList";
 import MessageComposer from "./components/MessageComposer";
 import MessageList from "./components/MessageList";
 import SearchPanel from "./components/SearchPanel";
-import UserSwitcher from "./components/UserSwitcher";
+import AuthScreen from "./components/AuthScreen";
 const sortConversations = (conversations: Conversation[]) =>
   [...conversations].sort(
     (a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at),
   );
 export default function App() {
-  const [users, setUsers] = useState<User[]>([]);
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -46,39 +48,47 @@ export default function App() {
   const [results, setResults] = useState<User[]>([]);
   const [searching, setSearching] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [authChecked, setAuthChecked] = useState(false);
   const [creating, setCreating] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [showInfo, setShowInfo] = useState(false);
-  const [bootRetry, setBootRetry] = useState(0);
   const searchInput = useRef<HTMLInputElement>(null);
   const identity = useRef(currentUserId);
   const activityGuard = useRef(new ConversationActivityGuard());
   identity.current = currentUserId;
   useEffect(() => {
     let cancelled = false;
-    getDemoUsers()
-      .then((data) => {
-        if (cancelled) return;
-        setUsers(data);
-        const stored = Number(localStorage.getItem("whisper-user"));
-        setCurrentUserId(
-          data.find((user) => user.id === stored)?.id || data[0]?.id || null,
-        );
-        if (!data.length) {
-          setError("暂无演示用户，请先初始化服务");
-          setLoading(false);
+    const expired = () => {
+      if (!cancelled) {
+        setCurrentUser(null);
+        setCurrentUserId(null);
+        setConversations([]);
+        setSelectedId(null);
+      }
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, expired);
+    getMe()
+      .then((user) => {
+        if (!cancelled) {
+          setCurrentUser(user);
+          setCurrentUserId(user.id);
         }
       })
       .catch((cause) => {
+        if (!cancelled && cause?.status !== 401)
+          setError(cause instanceof Error ? cause.message : "暂时无法连接服务");
+      })
+      .finally(() => {
         if (!cancelled) {
-          setError(cause.message);
+          setAuthChecked(true);
           setLoading(false);
         }
       });
     return () => {
       cancelled = true;
+      window.removeEventListener(AUTH_EXPIRED_EVENT, expired);
     };
-  }, [bootRetry]);
+  }, []);
   useEffect(() => {
     if (!currentUserId) return;
     let cancelled = false;
@@ -91,8 +101,6 @@ export default function App() {
     setResults([]);
     setCreating(null);
     setShowInfo(false);
-    setCurrentUser(users.find((user) => user.id === userId) || null);
-    localStorage.setItem("whisper-user", String(userId));
     const initialRevision = activityGuard.current.beginRequest();
     Promise.all([getMe(userId), listConversations(userId)])
       .then(([me, items]) => {
@@ -138,7 +146,7 @@ export default function App() {
       clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
-  }, [currentUserId, users, bootRetry]);
+  }, [currentUserId]);
   useEffect(() => {
     if (!currentUserId || query.trim().length < 2) {
       setResults([]);
@@ -263,10 +271,26 @@ export default function App() {
     searchInput.current?.focus();
   }
   const visibleError = error || live.error;
+  if (!authChecked)
+    return (
+      <div className="auth-loading">
+        <LoaderCircle size={22} className="spin" />
+      </div>
+    );
+  if (!currentUser)
+    return (
+      <AuthScreen
+        onAuthenticated={(user) => {
+          setCurrentUser(user);
+          setCurrentUserId(user.id);
+          setError("");
+        }}
+      />
+    );
   return (
     <div className={`app-shell ${selected ? "conversation-open" : ""}`}>
-      <aside className="brand-rail" aria-label="轻语">
-        <div className="brand-mark" title="轻语 Whisper">
+      <aside className="brand-rail" aria-label="Ephemera">
+        <div className="brand-mark" title="Ephemera">
           <Feather size={25} strokeWidth={1.7} />
         </div>
         <div className="rail-divider" />
@@ -283,22 +307,39 @@ export default function App() {
           <MessageCircle size={22} strokeWidth={1.6} />
         </button>
         <div className="rail-caption">LESS NOISE. MORE CONNECTION.</div>
-        <UserSwitcher
-          users={users}
-          currentUser={currentUser}
-          onChange={setCurrentUserId}
-        />
+        <div className="profile-rail">
+          <button
+            className="identity-trigger"
+            aria-label="账户设置"
+            title="账户设置"
+          >
+            <Avatar user={currentUser} size="small" />
+          </button>
+          <button
+            className="logout-rail"
+            aria-label="退出登录"
+            title="退出登录"
+            onClick={() =>
+              void logout().finally(() => {
+                setCurrentUser(null);
+                setCurrentUserId(null);
+              })
+            }
+          >
+            <LogOut size={14} />
+          </button>
+        </div>
       </aside>
       <aside className="sidebar" aria-label="会话列表">
         <div className="sidebar-header">
           <div>
             <h1>
-              轻语
+              Ephemera
               <span style={{ color: "#75a16c", fontSize: 19, marginLeft: 3 }}>
                 .
               </span>
             </h1>
-            <div className="brand-subtitle">WHISPER / 消息</div>
+            <div className="brand-subtitle">EPHEMERA / 私密消息</div>
           </div>
           <button
             className="icon-button"
@@ -368,7 +409,18 @@ export default function App() {
               onClick={() => {
                 setError("");
                 setLoading(true);
-                setBootRetry((value) => value + 1);
+                getMe()
+                  .then((user) => {
+                    setCurrentUser(user);
+                    setCurrentUserId(user.id);
+                  })
+                  .catch((cause) =>
+                    setError(
+                      cause instanceof Error
+                        ? cause.message
+                        : "暂时无法连接服务",
+                    ),
+                  );
               }}
             >
               <RefreshCw size={12} />
@@ -382,7 +434,7 @@ export default function App() {
             留一点空间，给真实的连接
             <span>
               {currentUser
-                ? `当前演示身份：${currentUser.display_name} · @${currentUser.username}`
+                ? `当前账户：${currentUser.display_name} · @${currentUser.username}`
                 : "一个轻盈、自在的聊天空间"}
             </span>
           </div>
@@ -470,7 +522,18 @@ export default function App() {
                 onClick={() => {
                   setError("");
                   setLoading(true);
-                  setBootRetry((value) => value + 1);
+                  getMe()
+                    .then((user) => {
+                      setCurrentUser(user);
+                      setCurrentUserId(user.id);
+                    })
+                    .catch((cause) =>
+                      setError(
+                        cause instanceof Error
+                          ? cause.message
+                          : "暂时无法连接服务",
+                      ),
+                    );
                 }}
               >
                 <RefreshCw size={14} />

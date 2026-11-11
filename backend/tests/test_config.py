@@ -7,3 +7,11 @@ def test_settings_reads_database_url_and_cleanup_interval(monkeypatch):
     settings = Settings.from_env()
     assert settings.database_url.endswith("/single_chat")
     assert settings.cleanup_interval_seconds == 15
+
+
+def test_settings_reads_redis_connection_and_namespace(monkeypatch):
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/4")
+    monkeypatch.setenv("REDIS_PREFIX", "whisper:isolated:")
+    settings = Settings.from_env()
+    assert settings.redis_url == "redis://localhost:6379/4"
+    assert settings.redis_prefix == "whisper:isolated:"

@@ -7,10 +7,15 @@ class User(models.Model):
     username_lower = fields.CharField(max_length=64, unique=True)
     display_name = fields.CharField(max_length=100)
     avatar_url = fields.CharField(max_length=512, null=True)
+    password_hash = fields.CharField(max_length=255, null=True)
+    email = fields.CharField(max_length=254, unique=True, null=True)
+    email_verified_at = fields.DatetimeField(null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
     async def save(self, *args, **kwargs):
         self.username_lower = self.username.lower()
+        if self.email:
+            self.email = self.email.strip().lower()
         return await super().save(*args, **kwargs)
 
 
@@ -31,15 +36,3 @@ class Conversation(models.Model):
         if self.user_a_id > self.user_b_id:
             self.user_a_id, self.user_b_id = self.user_b_id, self.user_a_id
         return await super().save(*args, **kwargs)
-
-
-class Message(models.Model):
-    id = fields.IntField(primary_key=True)
-    conversation = fields.ForeignKeyField("models.Conversation", related_name="messages", on_delete=fields.CASCADE)
-    sender = fields.ForeignKeyField("models.User", related_name="messages", on_delete=fields.CASCADE)
-    body = fields.TextField()
-    created_at = fields.DatetimeField(auto_now_add=True)
-    expires_at = fields.DatetimeField(null=True, db_index=True)
-
-    class Meta:
-        indexes = (("conversation", "id"),)

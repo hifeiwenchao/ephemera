@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
+from collections.abc import Mapping
 
-from tortoise.expressions import Q
-
-from .models import Conversation, Message, User
+from .message_store import get_message_store
+from .models import Conversation, User
 
 TTL_VALUES = {3600, 86400, 604800, 2592000}
 
@@ -23,21 +23,24 @@ def user_to_dict(user: User):
     return {"id": user.id, "username": user.username, "display_name": user.display_name, "avatar_url": user.avatar_url}
 
 
-def message_to_dict(message: Message):
+def message_to_dict(message):
+    """Return the stable public message DTO from Redis or a mapping-like value."""
+    if isinstance(message, Mapping):
+        return dict(message)
     return {
-        "id": message.id, "conversation_id": message.conversation_id, "sender_id": message.sender_id,
-        "body": message.body, "created_at": iso_time(message.created_at), "expires_at": iso_time(message.expires_at),
+        "id": message.id,
+        "conversation_id": message.conversation_id,
+        "sender_id": message.sender_id,
+        "body": message.body,
+        "created_at": iso_time(message.created_at),
+        "expires_at": iso_time(message.expires_at),
     }
-
-
-def visible_messages(now=None):
-    return Message.filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now or datetime.now(timezone.utc)))
 
 
 async def conversation_to_dict(conversation: Conversation, current_user_id: int):
     other_id = conversation.user_b_id if conversation.user_a_id == current_user_id else conversation.user_a_id
     other_user = await User.get(id=other_id)
-    last_message = await visible_messages().filter(conversation_id=conversation.id).order_by("-id").first()
+    last_message = await get_message_store().last_message(conversation.id)
     return {
         "id": conversation.id, "other_user": user_to_dict(other_user), "ttl_seconds": conversation.ttl_seconds,
         "created_at": iso_time(conversation.created_at), "updated_at": iso_time(conversation.updated_at),

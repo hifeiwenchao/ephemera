@@ -34,13 +34,18 @@ async def test_user_normalization_and_public_dto(users):
     }
 
 
-async def test_seed_idempotent(db):
-    from backend.app.models import Message
-
+async def test_seed_idempotent(db, redis_store):
     await seed_demo_data()
-    count = await Message.all().count()
+    count = int(await redis_store.client.get(redis_store.sequence_key))
     assert count > 0
     await seed_demo_data()
     assert await User.all().count() == 5
     assert await Conversation.all().count() == 3
-    assert await Message.all().count() == count
+    assert int(await redis_store.client.get(redis_store.sequence_key)) == count
+
+
+async def test_mysql_has_no_message_content_table(db):
+    from tortoise import connections
+
+    _, rows = await connections.get("default").execute_query("SELECT name FROM sqlite_master WHERE type='table'")
+    assert "message" not in {row["name"] for row in rows}

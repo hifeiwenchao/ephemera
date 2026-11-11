@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
 from tortoise.expressions import Q
-from tortoise.transactions import in_transaction
 
 from .errors import ForbiddenError, NotFoundError, UnauthorizedError, ValidationError, positive_integer
-from .models import Conversation, Message, User
-from .schemas import conversation_to_dict, message_to_dict, parse_ttl_seconds, user_to_dict, visible_messages
+from .message_store import get_message_store
+from .models import Conversation, User
+from .schemas import conversation_to_dict, parse_ttl_seconds, user_to_dict
 
 
 async def require_user(user_id: int) -> User:
@@ -62,12 +62,9 @@ async def list_messages(current_user_id: int, conversation_id: int, limit: int =
     positive_integer(limit, "limit")
     if limit > 100:
         raise ValidationError("limit 不能超过 100")
-    messages = visible_messages().filter(conversation_id=conversation_id)
     if before_id is not None:
         positive_integer(before_id, "before")
-        messages = messages.filter(id__lt=before_id)
-    result = await messages.order_by("-id").limit(limit)
-    return [message_to_dict(message) for message in reversed(result)]
+    return await get_message_store().list_messages(conversation_id, limit, before_id)
 
 
 async def set_conversation_ttl(current_user_id: int, conversation_id: int, ttl_seconds):
@@ -89,7 +86,9 @@ async def create_message(current_user_id: int, conversation_id: int, body):
         raise ValidationError("消息长度必须为 1–4000 个字符")
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=conversation.ttl_seconds) if conversation.ttl_seconds else None
-    async with in_transaction():
-        message = await Message.create(conversation_id=conversation.id, sender_id=current_user_id, body=body, created_at=now, expires_at=expires_at)
-        await Conversation.filter(id=conversation.id).update(updated_at=now)
-    return message_to_dict(message)
+    # Message content belongs only to Redis; SQL stores activity metadata.
+    message = await get_message_store().create_message(
+        conversation.id, current_user_id, body, created_at=now, expires_at=expires_at
+    )
+    await Conversation.filter(id=conversation.id).update(updated_at=now)
+    return message

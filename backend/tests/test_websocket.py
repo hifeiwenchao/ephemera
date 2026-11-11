@@ -2,13 +2,15 @@ import asyncio
 import json
 import os
 import socket
-import sqlite3
 import subprocess
 import sys
 import time
 
 import httpx
 import pytest
+from dotenv import dotenv_values
+from redis import Redis
+from uuid import uuid4
 from websockets.asyncio.client import connect
 
 
@@ -17,7 +19,12 @@ def live_server(tmp_path):
     with socket.socket() as port_socket:
         port_socket.bind(("127.0.0.1", 0))
         port = port_socket.getsockname()[1]
-    env = {**os.environ, "DATABASE_URL": f"sqlite://{tmp_path / 'socket.sqlite3'}", "PORT": str(port), "DEBUG": "false", "CLEANUP_INTERVAL_SECONDS": "1"}
+    private_env = dotenv_values("backend/.env")
+    redis_url = os.getenv("TEST_REDIS_URL") or private_env.get("REDIS_URL")
+    if not redis_url:
+        pytest.skip("TEST_REDIS_URL or backend/.env REDIS_URL is required for live socket tests")
+    prefix = f"whisper:test-{uuid4().hex}:"
+    env = {**os.environ, "DATABASE_URL": f"sqlite://{tmp_path / 'socket.sqlite3'}", "REDIS_URL": redis_url, "REDIS_PREFIX": prefix, "ALLOW_LEGACY_IDENTITY": "true", "PORT": str(port), "DEBUG": "false", "CLEANUP_INTERVAL_SECONDS": "1"}
     log = (tmp_path / "server.log").open("w+")
     process = subprocess.Popen([sys.executable, "-m", "backend.app.app"], env=env, stdout=log, stderr=log)
     base = f"http://127.0.0.1:{port}"
@@ -47,6 +54,10 @@ def live_server(tmp_path):
             process.kill()
             process.wait(timeout=2)
         log.close()
+        redis = Redis.from_url(redis_url, decode_responses=True)
+        for key in redis.scan_iter(f"{prefix}*"):
+            redis.delete(key)
+        redis.close()
 
 
 async def receive(ws):
@@ -78,21 +89,27 @@ async def test_two_real_sockets_broadcast_validate_and_ttl_notification(live_ser
             assert (await receive(unauthorized))["code"] == "forbidden"
 
 
-async def test_periodic_cleanup_removes_row_and_notifies_live_sockets(live_server, tmp_path):
+async def test_periodic_cleanup_removes_row_and_notifies_live_sockets(live_server):
     async with httpx.AsyncClient(base_url=live_server) as client:
         users = (await client.get("/api/demo-users")).json()
         alice, bob = users[0]["id"], users[1]["id"]
         conversation = (await client.post("/api/conversations", headers={"X-User-Id": str(alice)}, json={"user_id": bob})).json()
         endpoint = live_server.replace("http://", "ws://") + f"/ws/conversations/{conversation['id']}"
         async with connect(f"{endpoint}?user_id={alice}") as first, connect(f"{endpoint}?user_id={bob}") as second:
+            await client.patch(f"/api/conversations/{conversation['id']}/ttl", headers={"X-User-Id": str(alice)}, json={"ttl_seconds": 3600})
+            await asyncio.gather(receive(first), receive(second))
             await first.send(json.dumps({"type": "message.send", "body": "测试清理"}))
             event, _ = await asyncio.gather(receive(first), receive(second))
             message_id = event["data"]["id"]
-            with sqlite3.connect(tmp_path / "socket.sqlite3") as connection:
-                connection.execute("UPDATE message SET expires_at = '2000-01-01 00:00:00+00:00' WHERE id = ?", (message_id,))
+            redis = Redis.from_url(os.getenv("TEST_REDIS_URL") or dotenv_values("backend/.env")["REDIS_URL"], decode_responses=True)
+            key = next(key for key in redis.scan_iter(f"whisper:test-*:*message:{message_id}"))
+            redis.pexpire(key, 100)
+            redis.zadd(
+                next(key for key in redis.scan_iter("whisper:test-*:*message_expirations")),
+                {f"{conversation['id']}:{message_id}": 1},
+            )
+            redis.close()
             deleted_a, deleted_b = await asyncio.gather(receive(first), receive(second))
             assert deleted_a == deleted_b == {"type": "message.deleted", "data": {"ids": [message_id]}}
             history = (await client.get(f"/api/conversations/{conversation['id']}/messages", headers={"X-User-Id": str(bob)})).json()
             assert message_id not in [message["id"] for message in history]
-            with sqlite3.connect(tmp_path / "socket.sqlite3") as connection:
-                assert connection.execute("SELECT COUNT(*) FROM message WHERE id = ?", (message_id,)).fetchone()[0] == 0

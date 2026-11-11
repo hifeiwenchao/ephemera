@@ -5,6 +5,7 @@ from collections import defaultdict
 
 from sanic import Blueprint
 from tortoise.exceptions import DBConnectionError, OperationalError
+from redis.exceptions import RedisError
 
 from .errors import AppError, UnauthorizedError, ValidationError, integer_text
 from .services import create_message, require_conversation
@@ -72,17 +73,24 @@ async def send_error(websocket, error):
 @websocket_api.websocket("/ws/conversations/<conversation_id:int>")
 async def conversation_socket(request, websocket, conversation_id):
     try:
-        value = request.args.get("user_id", "")
-        try:
-            user_id = integer_text(value, "user_id")
-        except ValidationError as error:
-            raise UnauthorizedError("请选择有效的演示用户") from error
+        auth = getattr(request.app.ctx, "auth", None)
+        cookie_name = getattr(auth, "cookie_name", "whisper_session")
+        if auth is not None and cookie_name in request.cookies:
+            user_id = (await auth.authenticate_request(request)).id
+        else:
+            if auth is not None and not getattr(request.app.ctx.settings, "allow_legacy_identity", False):
+                raise UnauthorizedError("请先登录")
+            value = request.args.get("user_id", "")
+            try:
+                user_id = integer_text(value, "user_id")
+            except ValidationError as error:
+                raise UnauthorizedError("请先登录") from error
         await require_conversation(user_id, conversation_id)
     except AppError as error:
         await send_error(websocket, error)
         await websocket.close(code=1008)
         return
-    except (OperationalError, DBConnectionError, OSError):
+    except (OperationalError, DBConnectionError, RedisError, OSError):
         await websocket.send(
             json.dumps(
                 {
@@ -114,7 +122,7 @@ async def conversation_socket(request, websocket, conversation_id):
                 )
             except AppError as error:
                 await send_error(websocket, error)
-            except (OperationalError, DBConnectionError, OSError):
+            except (OperationalError, DBConnectionError, RedisError, OSError):
                 await websocket.send(
                     json.dumps(
                         {
