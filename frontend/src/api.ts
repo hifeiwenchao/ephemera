@@ -73,12 +73,23 @@ export const updateConversationTtl = (
     method: "PATCH",
     body: JSON.stringify({ ttl_seconds: ttl }),
   });
-export function socketUrl(_userId: number, conversationId: number): string {
+export const markConversationRead = (
+  _userId: number,
+  conversationId: number,
+  lastMessageId: number,
+) => request<Conversation>(`/conversations/${conversationId}/read`, {
+  method: "POST",
+  body: JSON.stringify({ last_message_id: lastMessageId }),
+});
+function websocketBase(): string {
   const origin =
     import.meta.env.VITE_WS_BASE_URL ||
     `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
-  return `${origin.replace(/\/$/, "")}/ws/conversations/${conversationId}`;
+  return origin.replace(/\/$/, "");
 }
+export const socketUrl = (_userId: number, conversationId: number) =>
+  `${websocketBase()}/ws/conversations/${conversationId}`;
+export const eventsSocketUrl = () => `${websocketBase()}/ws/events`;
 export const sendEmailCode = (email: string, purpose: "register" | "login") =>
   request<{ message: string; retry_after: number }>("/auth/email-code", {
     method: "POST",

@@ -107,3 +107,29 @@ async def test_health_checks_redis_and_returns_graceful_503(api, monkeypatch):
     monkeypatch.setattr(http_api, "get_message_store", lambda: UnavailableStore(), raising=False)
     _, response = await api.get("/api/health")
     assert response.status == 503 and response.json["error"]["code"] == "redis_unavailable"
+
+
+async def test_read_endpoint_marks_only_requested_reader_and_checks_membership(api):
+    headers = await identities(api)
+    _, conversations = await api.get("/api/conversations", headers=headers["alice"])
+    conversation = next(item for item in conversations.json if item["other_user"]["username"] == "bob")
+    message_id = conversation["last_message"]["id"]
+    endpoint = f"/api/conversations/{conversation['id']}/read"
+    _, response = await api.post(endpoint, headers=headers["bob"], json={"last_message_id": message_id})
+    assert response.status == 200 and response.json["unread_count"] == 0
+    assert response.json["other_user"]["username"] == "alice"
+    _, response = await api.get("/api/conversations", headers=headers["alice"])
+    assert next(item for item in response.json if item["id"] == conversation["id"])["unread_count"] == 1
+    _, response = await api.post(endpoint, headers=headers["carol"], json={"last_message_id": message_id})
+    assert response.status == 403
+    _, response = await api.post(endpoint, json={"last_message_id": message_id})
+    assert response.status == 401
+
+
+@pytest.mark.parametrize("payload", [[], True, {}, {"last_message_id": True}, {"last_message_id": 0}, {"last_message_id": "1"}, {"last_message_id": 999999}])
+async def test_read_endpoint_rejects_invalid_message_id(api, payload):
+    headers = await identities(api)
+    _, conversations = await api.get("/api/conversations", headers=headers["alice"])
+    endpoint = f"/api/conversations/{conversations.json[0]['id']}/read"
+    _, response = await api.post(endpoint, headers=headers["alice"], json=payload)
+    assert response.status == 400 and "error" in response.json

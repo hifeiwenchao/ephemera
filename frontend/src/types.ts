@@ -22,6 +22,7 @@ export interface Conversation {
   created_at: string;
   last_message: Message | null;
   unread_count: number;
+  other_last_read_message_id: number | null;
 }
 export interface SocketEvent {
   type: string;

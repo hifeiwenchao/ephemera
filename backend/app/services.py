@@ -69,6 +69,14 @@ async def list_messages(current_user_id: int, conversation_id: int, limit: int =
     return await get_message_store().list_messages(conversation_id, limit, before_id)
 
 
+async def mark_conversation_read(current_user_id: int, conversation_id: int, last_message_id):
+    conversation = await require_conversation(current_user_id, conversation_id)
+    positive_integer(last_message_id, "last_message_id")
+    if not await get_message_store().mark_read(conversation_id, current_user_id, last_message_id):
+        raise ValidationError("消息不属于此会话或已被清理")
+    return await conversation_to_dict(conversation, current_user_id)
+
+
 async def set_conversation_ttl(current_user_id: int, conversation_id: int, ttl_seconds):
     conversation = await require_conversation(current_user_id, conversation_id)
     try:

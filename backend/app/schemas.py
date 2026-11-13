@@ -40,9 +40,12 @@ def message_to_dict(message):
 async def conversation_to_dict(conversation: Conversation, current_user_id: int):
     other_id = conversation.user_b_id if conversation.user_a_id == current_user_id else conversation.user_a_id
     other_user = await User.get(id=other_id)
-    last_message = await get_message_store().last_message(conversation.id)
+    store = get_message_store()
+    last_message = await store.last_message(conversation.id)
     return {
         "id": conversation.id, "other_user": user_to_dict(other_user), "ttl_seconds": conversation.ttl_seconds,
         "created_at": iso_time(conversation.created_at), "updated_at": iso_time(conversation.updated_at),
-        "last_message": message_to_dict(last_message) if last_message else None, "unread_count": 0,
+        "last_message": message_to_dict(last_message) if last_message else None,
+        "unread_count": await store.unread_count(conversation.id, current_user_id),
+        "other_last_read_message_id": await store.last_read_message_id(conversation.id, other_id),
     }

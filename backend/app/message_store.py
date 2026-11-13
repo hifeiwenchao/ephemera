@@ -47,6 +47,56 @@ class RedisMessageStore:
     def history_key(self, conversation_id):
         return f"{self.prefix}conversation:{conversation_id}:messages"
 
+    def read_cursor_key(self, conversation_id, user_id):
+        return f"{self.prefix}conversation:{conversation_id}:read:{user_id}"
+
+    async def last_read_message_id(self, conversation_id, user_id):
+        value = await self.client.get(self.read_cursor_key(conversation_id, user_id))
+        return int(value) if value is not None else None
+
+    async def mark_read(self, conversation_id, user_id, message_id):
+        """Advance this reader only; a delayed request must never move backward."""
+        if await self.client.zscore(self.history_key(conversation_id), message_id) is None:
+            return False
+        key = self.read_cursor_key(conversation_id, user_id)
+        while True:
+            async with self.client.pipeline(transaction=True) as pipeline:
+                try:
+                    await pipeline.watch(key)
+                    current = int(await pipeline.get(key) or 0)
+                    if current >= message_id:
+                        await pipeline.unwatch()
+                        return True
+                    pipeline.multi()
+                    pipeline.set(key, message_id)
+                    await pipeline.execute()
+                    return True
+                except WatchError:
+                    continue
+
+    async def unread_count(self, conversation_id, user_id):
+        cursor = await self.last_read_message_id(conversation_id, user_id) or 0
+        minimum = f"({cursor}"
+        count = 0
+        now = utcnow()
+        while True:
+            ids = await self.client.zrangebyscore(
+                self.history_key(conversation_id), minimum, "+inf", start=0, num=100
+            )
+            if not ids:
+                return count
+            values = await self.client.mget([self.message_key(int(message_id)) for message_id in ids])
+            for raw in values:
+                if raw is None:
+                    continue
+                message = json.loads(raw)
+                if message["sender_id"] == user_id:
+                    continue
+                if message.get("expires_at") and timestamp(message["expires_at"]) <= now:
+                    continue
+                count += 1
+            minimum = f"({int(ids[-1])}"
+
     async def reserve_sequence(self, minimum):
         """Atomically raise the global sequence, never lowering active IDs."""
         while True:
@@ -64,38 +114,55 @@ class RedisMessageStore:
                 except WatchError:
                     continue
 
-    async def _write_message(self, message):
+    def _queue_message(self, pipeline, message):
         message_id = message["id"]
         conversation_id = message["conversation_id"]
         expiration = message.get("expires_at")
         # Floor to ensure Redis never retains a body past the advertised expiry.
         expiry_ms = math.floor(timestamp(expiration).timestamp() * 1000) if expiration else None
         member = f"{conversation_id}:{message_id}"
-        async with self.client.pipeline(transaction=True) as pipeline:
-            pipeline.set(
-                self.message_key(message_id),
-                json.dumps(message, ensure_ascii=False),
-                pxat=expiry_ms,
-            )
-            pipeline.zadd(self.history_key(conversation_id), {str(message_id): message_id})
-            if expiry_ms is not None:
-                pipeline.zadd(self.expirations_key, {member: expiry_ms})
-            else:
-                pipeline.zrem(self.expirations_key, member)
-            await pipeline.execute()
+        pipeline.set(
+            self.message_key(message_id),
+            json.dumps(message, ensure_ascii=False),
+            pxat=expiry_ms,
+        )
+        pipeline.zadd(self.history_key(conversation_id), {str(message_id): message_id})
+        if expiry_ms is not None:
+            pipeline.zadd(self.expirations_key, {member: expiry_ms})
+        else:
+            pipeline.zrem(self.expirations_key, member)
+
+    async def _write_message(self, message, *, pipeline=None):
+        if pipeline is not None:
+            self._queue_message(pipeline, message)
+            return
+        async with self.client.pipeline(transaction=True) as transaction:
+            self._queue_message(transaction, message)
+            await transaction.execute()
 
     async def create_message(self, conversation_id, sender_id, body, *, created_at=None, expires_at=None):
-        message_id = await self.client.incr(self.sequence_key)
-        message = {
-            "id": message_id,
+        content = {
             "conversation_id": conversation_id,
             "sender_id": sender_id,
             "body": body,
             "created_at": iso_time(created_at or utcnow()),
             "expires_at": iso_time(expires_at) if expires_at else None,
         }
-        await self._write_message(message)
-        return message
+        # Publish the ID and message together: reserving an ID in a separate
+        # command could let a late lower ID fall behind a reader's cursor.
+        while True:
+            async with self.client.pipeline(transaction=True) as pipeline:
+                try:
+                    await pipeline.watch(self.sequence_key)
+                    message_id = int(await pipeline.get(self.sequence_key) or 0) + 1
+                    message = {"id": message_id, **content}
+                    pipeline.multi()
+                    pipeline.set(self.sequence_key, message_id)
+                    await self._write_message(message, pipeline=pipeline)
+                    await pipeline.execute()
+                    return message
+                except WatchError:
+                    continue
 
     async def import_message(self, message):
         """Import an existing public DTO, retaining IDs/timestamps and expiry.

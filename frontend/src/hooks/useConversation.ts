@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listMessages, socketUrl } from "../api";
 import { applyMessageEvent, mergeMessages } from "../messages";
-import { HistoryPagination, SocketRetryPolicy } from "./conversationRuntime";
+import { conversationView, HistoryPagination, SocketRetryPolicy } from "./conversationRuntime";
 import type { Conversation, Message, SocketEvent } from "../types";
 export type ConnectionState =
   "connecting" | "connected" | "reconnecting" | "disconnected";
@@ -17,7 +17,9 @@ export function useConversation(
   onActivity: (conversation: Partial<Conversation> & { id: number }) => void,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [messageContext, setMessageContext] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadedContext, setLoadedContext] = useState("");
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
@@ -31,6 +33,9 @@ export function useConversation(
   const activeContext = useRef("");
   activeContext.current = `${userId}:${conversationId}:${generation}`;
   useEffect(() => {
+    const context = activeContext.current;
+    setMessageContext(context);
+    setLoadedContext("");
     setMessages([]);
     setHasMore(false);
     setError("");
@@ -57,12 +62,13 @@ export function useConversation(
       const eventIndex = receivedEvents.length;
       try {
         const history = await listMessages(userId, conversationId);
-        if (!disposed && revision === syncRevision) {
+        if (!disposed && activeContext.current === context && revision === syncRevision) {
           setMessages(() =>
             mergeMessages(history, receivedEvents.slice(eventIndex)).filter(
               (message) => !tombstones.has(message.id),
             ),
           );
+          setLoadedContext(context);
           pagination.current.resetPage(history);
           setHasMore(pagination.current.hasMore);
           if (
@@ -75,25 +81,25 @@ export function useConversation(
           setError("");
         }
       } catch (cause) {
-        if (!disposed)
+        if (!disposed && activeContext.current === context)
           setError(cause instanceof Error ? cause.message : "历史消息加载失败");
       } finally {
-        if (!disposed) setLoading(false);
+        if (!disposed && activeContext.current === context) setLoading(false);
       }
     };
     void sync();
     const connect = () => {
-      if (disposed) return;
+      if (disposed || activeContext.current !== context) return;
       const session = retries.startSession();
       const ws = new WebSocket(socketUrl(userId, conversationId));
       socket.current = ws;
       ws.onopen = () => {
-        if (disposed || socket.current !== ws) return;
+        if (disposed || activeContext.current !== context || socket.current !== ws) return;
         setConnection("connected");
         void sync(ws, session);
       };
       ws.onmessage = (event) => {
-        if (disposed || socket.current !== ws) return;
+        if (disposed || activeContext.current !== context || socket.current !== ws) return;
         let payload: SocketEvent;
         try {
           payload = JSON.parse(event.data);
@@ -135,7 +141,7 @@ export function useConversation(
         }
       };
       ws.onclose = (event) => {
-        if (disposed || socket.current !== ws) return;
+        if (disposed || activeContext.current !== context || socket.current !== ws) return;
         rejectPending("连接已断开，输入内容已保留");
         const delay = retries.nextDelay(session, event.code);
         if (delay !== null) {
@@ -216,7 +222,7 @@ export function useConversation(
     }
   }, [userId, conversationId, loadingOlder]);
   return {
-    messages,
+    ...conversationView(messages, messageContext, loadedContext, activeContext.current),
     loading,
     loadingOlder,
     hasMore,

@@ -1,7 +1,8 @@
-import { Check, MessageCircle } from "lucide-react";
+import { MessageCircle } from "lucide-react";
 import type { Conversation } from "../types";
 import { previewTime } from "../display";
 import Avatar from "./Avatar";
+import MessageStatus from "./MessageStatus";
 export default function ConversationList({
   conversations,
   selectedId,
@@ -58,12 +59,26 @@ export default function ConversationList({
                 )}
               </time>
             </div>
-            <p className="conversation-preview">
-              {conversation.last_message?.sender_id === userId && (
-                <Check size={13} className="preview-check" />
+            <div className="conversation-preview-line">
+              <p className="conversation-preview">
+                {conversation.last_message?.sender_id === userId && (
+                  <MessageStatus
+                    messageId={conversation.last_message.id}
+                    otherLastReadMessageId={conversation.other_last_read_message_id}
+                    className="preview-check"
+                  />
+                )}
+                {conversation.last_message?.body || "打个招呼，开始你们的对话"}
+              </p>
+              {conversation.unread_count > 0 && (
+                <span
+                  className="unread-badge"
+                  aria-label={`${conversation.unread_count} 条未读消息`}
+                >
+                  {conversation.unread_count > 99 ? "99+" : conversation.unread_count}
+                </span>
               )}
-              {conversation.last_message?.body || "打个招呼，开始你们的对话"}
-            </p>
+            </div>
           </div>
         </button>
       ))}

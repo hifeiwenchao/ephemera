@@ -1,8 +1,10 @@
 import { Fragment, useEffect, useRef } from "react";
-import { Check, Clock3, LoaderCircle } from "lucide-react";
+import { Clock3, LoaderCircle } from "lucide-react";
 import type { Message, User } from "../types";
 import { dateLabel, expirationLabel, timeLabel } from "../display";
 import Avatar from "./Avatar";
+import MessageStatus from "./MessageStatus";
+import { renderedIncomingBoundary } from "../hooks/conversationRuntime";
 export default function MessageList({
   messages,
   currentUser,
@@ -11,6 +13,10 @@ export default function MessageList({
   hasMore,
   loadingOlder,
   onLoadOlder,
+  conversationId,
+  historyLoaded,
+  onMessagesRendered,
+  otherLastReadMessageId,
 }: {
   messages: Message[];
   currentUser: User;
@@ -19,11 +25,19 @@ export default function MessageList({
   hasMore: boolean;
   loadingOlder: boolean;
   onLoadOlder: () => Promise<void>;
+  conversationId: number;
+  historyLoaded: boolean;
+  onMessagesRendered: (messageId: number | null) => void;
+  otherLastReadMessageId: number | null;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
   const initial = useRef(true);
   const lastId = messages[messages.length - 1]?.id;
+  useEffect(() => {
+    if (!loading && historyLoaded)
+      onMessagesRendered(renderedIncomingBoundary(messages, currentUser.id, conversationId, historyLoaded));
+  }, [messages, currentUser.id, conversationId, loading, historyLoaded, onMessagesRendered]);
   useEffect(() => {
     const element = scroller.current;
     if (element && (initial.current || nearBottom.current)) {
@@ -113,10 +127,10 @@ export default function MessageList({
                           {timeLabel(message.created_at)}
                         </time>
                         {outgoing && (
-                          <Check
-                            size={13}
+                          <MessageStatus
+                            messageId={message.id}
+                            otherLastReadMessageId={otherLastReadMessageId}
                             className="delivery"
-                            aria-label="已发送"
                           />
                         )}
                       </div>

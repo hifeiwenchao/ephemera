@@ -24,7 +24,7 @@ def live_server(tmp_path):
     if not redis_url:
         pytest.skip("TEST_REDIS_URL or backend/.env REDIS_URL is required for live socket tests")
     prefix = f"whisper:test-{uuid4().hex}:"
-    env = {**os.environ, "DATABASE_URL": f"sqlite://{tmp_path / 'socket.sqlite3'}", "REDIS_URL": redis_url, "REDIS_PREFIX": prefix, "ALLOW_LEGACY_IDENTITY": "true", "PORT": str(port), "DEBUG": "false", "CLEANUP_INTERVAL_SECONDS": "1"}
+    env = {**os.environ, "DATABASE_URL": f"sqlite://{tmp_path / 'socket.sqlite3'}", "REDIS_URL": redis_url, "REDIS_PREFIX": prefix, "ALLOW_LEGACY_IDENTITY": "true", "AUTH_TEST_MODE": "true", "PORT": str(port), "DEBUG": "false", "CLEANUP_INTERVAL_SECONDS": "1"}
     log = (tmp_path / "server.log").open("w+")
     process = subprocess.Popen([sys.executable, "-m", "backend.app.app"], env=env, stdout=log, stderr=log)
     base = f"http://127.0.0.1:{port}"
@@ -113,3 +113,71 @@ async def test_periodic_cleanup_removes_row_and_notifies_live_sockets(live_serve
             assert deleted_a == deleted_b == {"type": "message.deleted", "data": {"ids": [message_id]}}
             history = (await client.get(f"/api/conversations/{conversation['id']}/messages", headers={"X-User-Id": str(bob)})).json()
             assert message_id not in [message["id"] for message in history]
+
+
+async def test_user_events_track_unopened_conversation_and_read_on_other_device(live_server):
+    async with httpx.AsyncClient(base_url=live_server) as client:
+        users = {user["username"]: user["id"] for user in (await client.get("/api/demo-users")).json()}
+        alice, nina = users["alice"], users["nina"]
+        ws_base = live_server.replace("http://", "ws://")
+        async with connect(f"{ws_base}/ws/events?user_id={alice}") as alice_events, connect(f"{ws_base}/ws/events?user_id={nina}") as nina_events:
+            conversation = (await client.post("/api/conversations", headers={"X-User-Id": str(alice)}, json={"user_id": nina})).json()
+            first, second = await asyncio.gather(receive(alice_events), receive(nina_events))
+            assert first["type"] == second["type"] == "conversation.updated"
+            assert second["data"]["id"] == conversation["id"]
+            assert second["data"]["unread_count"] == 0
+            async with connect(f"{ws_base}/ws/conversations/{conversation['id']}?user_id={alice}") as sender:
+                await sender.send(json.dumps({"type": "message.send", "body": "unopened chat"}))
+                message = (await receive(sender))["data"]
+                first, second = await asyncio.gather(receive(alice_events), receive(nina_events))
+                assert first["data"]["unread_count"] == 0
+                assert second["data"]["unread_count"] == 1
+                assert second["data"]["last_message"]["body"] == "unopened chat"
+                response = await client.post(f"/api/conversations/{conversation['id']}/read", headers={"X-User-Id": str(nina)}, json={"last_message_id": message["id"]})
+                assert response.status_code == 200
+                first, second = await asyncio.gather(receive(alice_events), receive(nina_events))
+                assert first["data"]["other_last_read_message_id"] == message["id"]
+                assert first["data"]["unread_count"] == 0
+                assert second["data"]["unread_count"] == 0
+                assert second["data"]["other_last_read_message_id"] is None
+                await alice_events.close()
+                async with connect(f"{ws_base}/ws/events?user_id={alice}") as reconnected:
+                    conversations = (await client.get("/api/conversations", headers={"X-User-Id": str(alice)})).json()
+                    persisted = next(item for item in conversations if item["id"] == conversation["id"])
+                    assert persisted["other_last_read_message_id"] == message["id"]
+                    response = await client.patch(f"/api/conversations/{conversation['id']}/ttl", headers={"X-User-Id": str(nina)}, json={"ttl_seconds": 3600})
+                    assert response.status_code == 200
+                    first, second = await asyncio.gather(receive(reconnected), receive(nina_events))
+                    assert first["data"]["ttl_seconds"] == second["data"]["ttl_seconds"] == 3600
+                    assert first["data"]["other_last_read_message_id"] == message["id"]
+
+
+async def test_user_event_stream_rejects_missing_or_unknown_identity(live_server):
+    endpoint = live_server.replace("http://", "ws://") + "/ws/events"
+    for suffix in ["", "?user_id=999"]:
+        async with connect(endpoint + suffix) as socket:
+            assert (await receive(socket))["code"] == "unauthorized"
+            await socket.wait_closed()
+            assert socket.close_code == 1008
+
+
+async def test_user_event_stream_uses_login_cookie_and_rejects_invalid_cookie(live_server):
+    async with httpx.AsyncClient(base_url=live_server) as client:
+        code = await client.post("/api/auth/email-code", json={"email": "reader@example.com", "purpose": "register"})
+        assert code.status_code == 200
+        registered = await client.post("/api/auth/register", json={
+            "username": "reader", "display_name": "读者", "password": "a-good-password",
+            "email": "reader@example.com", "code": "666666",
+        })
+        assert registered.status_code == 200
+        endpoint = live_server.replace("http://", "ws://") + "/ws/events"
+        cookie = "; ".join(f"{name}={value}" for name, value in client.cookies.items())
+        async with connect(endpoint, additional_headers={"Cookie": cookie}) as events:
+            users = {user["username"]: user["id"] for user in (await client.get("/api/demo-users")).json()}
+            conversation = await client.post("/api/conversations", json={"user_id": users["alice"]})
+            assert conversation.status_code == 200
+            assert (await receive(events))["data"]["id"] == conversation.json()["id"]
+        async with connect(endpoint, additional_headers={"Cookie": "whisper_session=invalid"}) as invalid:
+            assert (await receive(invalid))["code"] == "unauthorized"
+            await invalid.wait_closed()
+            assert invalid.close_code == 1008

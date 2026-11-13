@@ -4,8 +4,9 @@ from redis.exceptions import RedisError
 from .errors import UnauthorizedError, ValidationError, integer_text
 from .models import User
 from .schemas import user_to_dict
-from .services import get_or_create_conversation, list_conversations, list_messages, require_user, search_users, set_conversation_ttl
+from .services import get_or_create_conversation, list_conversations, list_messages, mark_conversation_read, require_user, search_users, set_conversation_ttl
 from .message_store import get_message_store
+from .websocket import notify_conversation
 
 api = Blueprint("api", url_prefix="/api")
 
@@ -80,7 +81,9 @@ async def conversations(request):
 async def conversations_create(request):
     user_id = await require_user_id(request)
     body = object_body(request)
-    return response.json(await get_or_create_conversation(user_id, body.get("user_id")))
+    conversation = await get_or_create_conversation(user_id, body.get("user_id"))
+    await notify_conversation(conversation["id"])
+    return response.json(conversation)
 
 
 @api.get("/conversations/<conversation_id:int>/messages")
@@ -89,6 +92,15 @@ async def messages(request, conversation_id):
         await require_user_id(request), conversation_id,
         limit=query_integer(request, "limit", 50), before_id=query_integer(request, "before"),
     ))
+
+
+@api.post("/conversations/<conversation_id:int>/read")
+async def conversation_read(request, conversation_id):
+    user_id = await require_user_id(request)
+    body = object_body(request)
+    conversation = await mark_conversation_read(user_id, conversation_id, body.get("last_message_id"))
+    await notify_conversation(conversation_id)
+    return response.json(conversation)
 
 
 @api.patch("/conversations/<conversation_id:int>/ttl")
@@ -101,6 +113,7 @@ async def conversation_ttl(request, conversation_id):
     await request.app.ctx.connections.broadcast(conversation_id, {
         "type": "conversation.updated", "data": {"id": conversation_id, "ttl_seconds": conversation["ttl_seconds"]},
     })
+    await notify_conversation(conversation_id)
     return response.json(conversation)
 
 
@@ -110,6 +123,7 @@ async def conversation_ttl(request, conversation_id):
 @api.options("/users/search", name="search_options")
 @api.options("/conversations", name="conversations_options")
 @api.options("/conversations/<conversation_id:int>/messages", name="messages_options")
+@api.options("/conversations/<conversation_id:int>/read", name="read_options")
 @api.options("/conversations/<conversation_id:int>/ttl", name="ttl_options")
 async def preflight(request, conversation_id=None):
     return response.empty()

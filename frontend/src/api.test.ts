@@ -50,3 +50,23 @@ describe("cookie-based authenticated API", () => {
     expect(socketUrl(9, 2)).toBe("ws://localhost:5173/ws/conversations/2");
   });
 });
+
+describe("unread API contract", () => {
+  it("marks only an explicit rendered message boundary using the session cookie", async () => {
+    const api = await import("./api");
+    expect(api).toHaveProperty("markConversationRead");
+    const fetchMock = mockResponse({ id: 7, unread_count: 0, other_last_read_message_id: null });
+    await api.markConversationRead(9, 7, 42);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/conversations/7/read");
+    expect(options.method).toBe("POST");
+    expect(options.credentials).toBe("include");
+    expect(JSON.parse(options.body)).toEqual({ last_message_id: 42 });
+  });
+  it("opens user-wide events without an identity in the URL", async () => {
+    const api = await import("./api");
+    expect(api).toHaveProperty("eventsSocketUrl");
+    vi.stubGlobal("location", { protocol: "https:", host: "localhost:5173" });
+    expect(api.eventsSocketUrl()).toBe("wss://localhost:5173/ws/events");
+  });
+});

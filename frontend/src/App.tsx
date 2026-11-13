@@ -18,8 +18,10 @@ import {
 import {
   AUTH_EXPIRED_EVENT,
   createConversation,
+  eventsSocketUrl,
   getMe,
   listConversations,
+  markConversationRead,
   logout,
   searchUsers,
   updateConversationTtl,
@@ -28,6 +30,7 @@ import type { Conversation, TtlSeconds, User } from "./types";
 import { ttlLabel } from "./display";
 import { ConversationActivityGuard } from "./conversationState";
 import { useConversation } from "./hooks/useConversation";
+import { ReadReceiptScheduler, subscribeConversationEvents } from "./hooks/conversationRuntime";
 import Avatar from "./components/Avatar";
 import ChatHeader from "./components/ChatHeader";
 import ConversationList from "./components/ConversationList";
@@ -55,7 +58,37 @@ export default function App() {
   const searchInput = useRef<HTMLInputElement>(null);
   const identity = useRef(currentUserId);
   const activityGuard = useRef(new ConversationActivityGuard());
+  const readReceipts = useRef<ReadReceiptScheduler | null>(null);
   identity.current = currentUserId;
+  if (!readReceipts.current)
+    readReceipts.current = new ReadReceiptScheduler(async (userId, conversationId, messageId) => {
+      const requestRevision = activityGuard.current.beginRequest();
+      const updated = await markConversationRead(userId, conversationId, messageId);
+      if (identity.current === userId && activityGuard.current.beginRequest() === requestRevision) {
+        activityGuard.current.recordActivity();
+        setConversations((previous) => sortConversations([
+          ...previous.filter((item) => item.id !== updated.id), updated,
+        ]));
+      }
+    });
+  readReceipts.current.setContext(currentUserId, selectedId);
+  useEffect(() => {
+    const updateAttention = () => readReceipts.current?.setAttention(
+      document.visibilityState === "visible" && document.hasFocus(),
+    );
+    const blur = () => readReceipts.current?.setAttention(false);
+    updateAttention();
+    document.addEventListener("visibilitychange", updateAttention);
+    window.addEventListener("focus", updateAttention);
+    window.addEventListener("blur", blur);
+    return () => {
+      document.removeEventListener("visibilitychange", updateAttention);
+      window.removeEventListener("focus", updateAttention);
+      window.removeEventListener("blur", blur);
+      readReceipts.current?.setAttention(false);
+      readReceipts.current?.setContext(null, null);
+    };
+  }, []);
   useEffect(() => {
     let cancelled = false;
     const expired = () => {
@@ -101,7 +134,7 @@ export default function App() {
     setResults([]);
     setCreating(null);
     setShowInfo(false);
-    const initialRevision = activityGuard.current.beginRequest();
+    const initialRevision = activityGuard.current.beginSnapshot();
     Promise.all([getMe(userId), listConversations(userId)])
       .then(([me, items]) => {
         if (cancelled) return;
@@ -123,10 +156,10 @@ export default function App() {
         if (!cancelled) setLoading(false);
       });
     const refresh = () => {
-      const requestRevision = activityGuard.current.beginRequest();
+      const requestRevision = activityGuard.current.beginSnapshot();
       return listConversations(userId)
         .then((items) => {
-          if (!cancelled)
+          if (!cancelled) {
             setConversations((previous) =>
               activityGuard.current.applySnapshot(
                 previous,
@@ -134,17 +167,32 @@ export default function App() {
                 requestRevision,
               ),
             );
-        })
-        .catch(() => {
-          /* The conversation and connection states preserve current content during background failures. */
+            readReceipts.current?.retry();
+          }
         });
     };
-    const timer = setInterval(refresh, 15000);
-    window.addEventListener("focus", refresh);
+    const events = subscribeConversationEvents(eventsSocketUrl(), (conversation) => {
+      if (cancelled) return;
+      activityGuard.current.recordActivity();
+      setConversations((previous) => sortConversations([
+        ...previous.filter((item) => item.id !== conversation.id), conversation,
+      ]));
+    }, refresh);
+    const backgroundRefresh = () => {
+      events.reconnect();
+      void refresh().catch(() => {
+        /* Preserve current content while the service is unavailable. */
+      });
+    };
+    const timer = setInterval(backgroundRefresh, 15000);
+    window.addEventListener("focus", backgroundRefresh);
+    window.addEventListener("online", backgroundRefresh);
     return () => {
       cancelled = true;
       clearInterval(timer);
-      window.removeEventListener("focus", refresh);
+      events.close();
+      window.removeEventListener("focus", backgroundRefresh);
+      window.removeEventListener("online", backgroundRefresh);
     };
   }, [currentUserId]);
   useEffect(() => {
@@ -210,6 +258,11 @@ export default function App() {
     [],
   );
   const live = useConversation(currentUserId, selectedId, onActivity);
+  const onMessagesRendered = useCallback((messageId: number | null) => {
+    if (!currentUserId || !selectedId) return;
+    readReceipts.current?.setAttention(document.visibilityState === "visible" && document.hasFocus());
+    readReceipts.current?.rendered(currentUserId, selectedId, messageId);
+  }, [currentUserId, selectedId]);
   const selected =
     conversations.find((conversation) => conversation.id === selectedId) ||
     null;
@@ -233,7 +286,7 @@ export default function App() {
       );
       setSelectedId(conversation.id);
       setQuery("");
-      const refreshRevision = activityGuard.current.beginRequest();
+      const refreshRevision = activityGuard.current.beginSnapshot();
       const items = await listConversations(userId);
       if (identity.current === userId)
         setConversations((previous) =>
@@ -474,6 +527,10 @@ export default function App() {
               hasMore={live.hasMore}
               loadingOlder={live.loadingOlder}
               onLoadOlder={live.loadOlder}
+              conversationId={selected.id}
+              historyLoaded={live.historyLoaded}
+              onMessagesRendered={onMessagesRendered}
+              otherLastReadMessageId={selected.other_last_read_message_id}
             />
             <MessageComposer
               key={`${currentUserId}:${selectedId}:composer`}
